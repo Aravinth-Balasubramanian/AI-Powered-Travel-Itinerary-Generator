@@ -3,6 +3,7 @@ python-dotenv
 requests
 pandas
 numpy
+streamlit-folium
 
 # Machine Learning
 scikit-learn
