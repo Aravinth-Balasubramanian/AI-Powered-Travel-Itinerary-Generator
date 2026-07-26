@@ -44,3 +44,4 @@ sqlalchemy
 # Utilities
 tqdm
 matplotlib
+import torchvision
