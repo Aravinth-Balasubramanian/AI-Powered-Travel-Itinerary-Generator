@@ -134,6 +134,10 @@ The `notebooks/` folder has the exploration work:
 - Replace the hardcoded SAMPLE fallback with a proper seeding script
 - Add caching for geocoding results so repeated queries don't hit Nominatim
 - Use a streaming LLM response so the itinerary appears word by word instead of all at once
+
+## 🌐 Live Demo
+
+🔗 https://ai-powered-travel-itinerary-generator.streamlit.app/
 - The video export is purely PIL — would be nicer with proper motion between cards
 
 ---
