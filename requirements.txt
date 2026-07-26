@@ -1,0 +1,44 @@
+# Core
+python-dotenv
+requests
+pandas
+numpy
+
+# Machine Learning
+scikit-learn
+xgboost
+
+# Hugging Face Embeddings
+sentence-transformers
+transformers
+torch
+
+# LangChain
+langchain
+langchain-core
+langchain-community
+langchain-huggingface
+langchain-groq
+
+# Vector Database
+chromadb
+
+# Maps & Geocoding
+folium
+geopy
+
+# Image Processing
+Pillow
+
+# Video Generation
+moviepy
+
+# Streamlit
+streamlit
+
+# Database
+sqlalchemy
+
+# Utilities
+tqdm
+matplotlib
