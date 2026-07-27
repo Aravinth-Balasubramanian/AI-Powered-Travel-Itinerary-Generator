@@ -46,3 +46,4 @@ tqdm
 matplotlib
 torchvision
 opencv-python-headless
+moviepy==1.0.3
