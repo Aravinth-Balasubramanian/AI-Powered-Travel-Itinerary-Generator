@@ -1,6 +1,8 @@
 import os, numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import ImageClip, concatenate_videoclips, AudioFileClip
+import os
+os.makedirs("videos", exist_ok=True)
 
 OUTPUT_FOLDER, MUSIC_PATH, W, H, FPS, DURATION = "videos", "assets/music.mp3", 1280, 720, 24, 4
 
