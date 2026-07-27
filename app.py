@@ -2,17 +2,24 @@
 ItinerAI — AI Travel Planner  |  streamlit run app.py
 """
 import os, uuid, sqlite3, time
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
-import joblib, pandas as pd, requests, streamlit as st, folium
+
+import joblib
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
+import folium
 from streamlit_folium import st_folium
 from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 import chromadb
-import torchvision
 
 load_dotenv()
 os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "")
@@ -24,6 +31,8 @@ DATA_PATH  = _HERE / "data" / "cleaned_places.csv"
 CHROMA_DIR = str(_HERE / "vector_db")
 DB_PATH    = str(_HERE / "itinerai_history.db")
 MODEL_PATH = str(_HERE / "xgboost_model.pkl")
+VIDEO_DIR  = str(_HERE / "videos")
+MUSIC_PATH = str(_HERE / "assets" / "music.mp3")
 
 SAMPLE = pd.DataFrame([
     {"Zone":"Northern","State":"Rajasthan","City":"Jaipur","Name":"Amber Fort","Type":"Historical","Establishment Year":"1592","time needed to visit in hrs":3.0,"Google review rating":4.8,"Entrance Fee in INR":200,"Airport with 50km Radius":"Yes","Weekly Off":"Open Daily","Significance":"Historical","DSLR Allowed":"Yes","Number of google review in lakhs":1.5,"Best Time to visit":"Morning"},
@@ -64,26 +73,33 @@ section[data-testid="stSidebar"] input::placeholder{color:#4A6580 !important;}
 section[data-testid="stSidebar"] .stButton>button{
   background:#D4A843 !important;color:#0D1B2A !important;
   border:none;border-radius:10px;font-weight:700;
-  padding:.7rem 1rem;width:100%;font-size:.95rem;letter-spacing:.02em;}
-section[data-testid="stSidebar"] .stButton>button:hover{background:#C49535 !important;}
+  padding:.7rem 1rem;width:100%;font-size:.95rem;letter-spacing:.02em;
+  transition:transform .15s ease, box-shadow .15s ease;}
+section[data-testid="stSidebar"] .stButton>button:hover{
+  background:#C49535 !important;transform:translateY(-1px);
+  box-shadow:0 6px 16px rgba(212,168,67,.35);}
 
 /* Hero */
 .hero{background:#0D1B2A;padding:4rem 3rem 3.5rem;text-align:center;margin:0 -2rem 2rem;
   border-bottom:3px solid #D4A843;position:relative;overflow:hidden;}
 .hero::before{content:'';position:absolute;inset:0;
   background:radial-gradient(ellipse 65% 55% at 50% 105%,rgba(212,168,67,.1),transparent);pointer-events:none;}
-.hero-emoji{font-size:3rem;margin-bottom:.5rem;}
+.hero-emoji{font-size:3rem;margin-bottom:.5rem;animation:float 3.5s ease-in-out infinite;}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
 .hero h1{font-family:'DM Serif Display',serif;color:#FBF7F0;font-size:3rem;line-height:1.1;margin:.4rem 0 .8rem;}
 .hero h1 em{color:#D4A843;font-style:italic;}
 .hero-sub{color:#8A9BB0;font-size:1rem;max-width:520px;margin:0 auto 1.6rem;line-height:1.65;}
 .hero-badges{display:flex;flex-wrap:wrap;gap:.4rem;justify-content:center;}
 .badge{background:rgba(212,168,67,.12);color:#D4A843;border:1px solid rgba(212,168,67,.25);
-  padding:.25rem .7rem;border-radius:999px;font-size:.68rem;font-weight:600;letter-spacing:.05em;}
+  padding:.25rem .7rem;border-radius:999px;font-size:.68rem;font-weight:600;letter-spacing:.05em;
+  transition:background .15s ease;}
+.badge:hover{background:rgba(212,168,67,.24);}
 
 /* Stat bar */
 .stat-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:#E8E0D0;
   border-radius:14px;overflow:hidden;margin-bottom:2rem;}
-.stat-cell{background:#fff;padding:1rem .6rem;text-align:center;}
+.stat-cell{background:#fff;padding:1rem .6rem;text-align:center;transition:background .15s ease;}
+.stat-cell:hover{background:#FFF9EC;}
 .stat-cell .sv{font-size:1.2rem;font-weight:700;color:#0D1B2A;line-height:1;}
 .stat-cell .sk{font-size:.58rem;color:#8A9BB0;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-top:.3rem;}
 
@@ -100,7 +116,9 @@ section[data-testid="stSidebar"] .stButton>button:hover{background:#C49535 !impo
 .pcard{background:#fff;border-radius:12px;padding:1rem 1.3rem;margin-bottom:.7rem;
   border-left:4px solid #D4A843;border-top:1px solid #EEE8DC;
   border-right:1px solid #EEE8DC;border-bottom:1px solid #EEE8DC;
-  display:flex;align-items:flex-start;gap:1rem;}
+  display:flex;align-items:flex-start;gap:1rem;
+  transition:transform .15s ease, box-shadow .15s ease;}
+.pcard:hover{transform:translateX(4px);box-shadow:0 8px 20px rgba(13,27,42,.08);}
 .pnum{background:#0D1B2A;color:#D4A843;font-weight:700;width:32px;height:32px;
   border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.85rem;}
 .pcard h4{margin:0 0 .35rem;color:#0D1B2A;font-size:.95rem;font-weight:600;}
@@ -118,7 +136,8 @@ section[data-testid="stSidebar"] .stButton>button:hover{background:#C49535 !impo
 
 /* Empty state */
 .empty{text-align:center;padding:5rem 1rem;color:#8A9BB0;}
-.empty .ei{font-size:3.5rem;margin-bottom:1rem;}
+.empty .ei{font-size:3.5rem;margin-bottom:1rem;animation:pulse 2.4s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
 .empty h3{color:#4A6580;font-size:1.05rem;margin:0 0 .4rem;}
 .empty p{font-size:.88rem;margin:0;}
 
@@ -137,40 +156,53 @@ class DataIngestion:
     def load(self):
         if DATA_PATH.exists():
             df = pd.read_csv(DATA_PATH)
-            for c in ["Google review rating","Entrance Fee in INR","time needed to visit in hrs"]:
+            for c in ["Google review rating", "Entrance Fee in INR", "time needed to visit in hrs"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
             return df
         st.toast("Using sample data — add data/cleaned_places.csv for full dataset.", icon="ℹ️")
         return SAMPLE.copy()
+
     def to_docs(self, df):
         return [Document(
             page_content=(f"Place:{r['Name']} City:{r['City']} State:{r['State']} Type:{r['Type']} "
                           f"Significance:{r['Significance']} BestTime:{r['Best Time to visit']} "
                           f"Duration:{r['time needed to visit in hrs']}hrs Rating:{r['Google review rating']} "
                           f"Fee:{r['Entrance Fee in INR']}INR"),
-            metadata={"name":str(r["Name"]),"city":str(r["City"]),"state":str(r["State"]),
-                      "type":str(r["Type"]),"rating":float(r["Google review rating"]),
-                      "duration":float(r["time needed to visit in hrs"]),
-                      "fee":float(r["Entrance Fee in INR"]),"best_time":str(r["Best Time to visit"])})
+            metadata={"name": str(r["Name"]), "city": str(r["City"]), "state": str(r["State"]),
+                      "type": str(r["Type"]), "rating": float(r["Google review rating"]),
+                      "duration": float(r["time needed to visit in hrs"]),
+                      "fee": float(r["Entrance Fee in INR"]), "best_time": str(r["Best Time to visit"])})
             for _, r in df.iterrows()]
 
+
 class EmbeddingModel:
-    def __init__(self): self.m = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    def embed_docs(self, docs): return self.m.embed_documents([d.page_content for d in docs])
-    def embed_query(self, q):   return self.m.embed_query(q)
+    def __init__(self):
+        self.m = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+    def embed_docs(self, docs):
+        return self.m.embed_documents([d.page_content for d in docs])
+
+    def embed_query(self, q):
+        return self.m.embed_query(q)
+
 
 class VectorStore:
     def __init__(self):
         os.makedirs(CHROMA_DIR, exist_ok=True)
         self.col = chromadb.PersistentClient(path=CHROMA_DIR).get_or_create_collection("tourist_places")
-    def empty(self): return self.col.count() == 0
+
+    def empty(self):
+        return self.col.count() == 0
+
     def add(self, docs, embs):
         self.col.add(ids=[str(uuid.uuid4()) for _ in docs],
                      documents=[d.page_content for d in docs],
                      embeddings=embs, metadatas=[d.metadata for d in docs])
+
     def search(self, emb, k=15):
         k = min(k, max(self.col.count(), 1))
         return self.col.query(query_embeddings=[emb], n_results=k)
+
 
 class RAGPipeline:
     _PROMPT = ChatPromptTemplate.from_template("""You are ItinerAI, an expert Indian travel planner.
@@ -178,143 +210,296 @@ Generate a day-wise itinerary using ONLY the places listed below. Never invent p
 Format: **Day N — Theme** header, then bullet points: • Place (Xh) — one-line reason.
 End with a 3-bullet Travel Tips section (best season, transport, food tip).
 Retrieved places:\n{context}\n\nRequest: {question}""")
+
     def __init__(self, vs, em):
         self.vs, self.em = vs, em
         self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+
     def ask(self, q, k=15):
         r = self.vs.search(self.em.embed_query(q), k)
         ctx = "\n\n".join(r["documents"][0])
         return {"answer": self.llm.invoke(self._PROMPT.format(context=ctx, question=q)).content,
                 "metadata": r["metadatas"][0]}
 
+
 class Geocoder:
-    def __init__(self): self.s = requests.Session(); self.s.headers["User-Agent"] = "ItinerAI/2.0"
+    def __init__(self):
+        self.s = requests.Session()
+        self.s.headers["User-Agent"] = "ItinerAI/2.0"
+
     def get(self, name, city=""):
         try:
             d = self.s.get("https://nominatim.openstreetmap.org/search",
-                           params={"q":f"{name},{city},India","format":"json","limit":1},timeout=6).json()
-            if d: return float(d[0]["lat"]), float(d[0]["lon"])
-        except: pass
+                           params={"q": f"{name},{city},India", "format": "json", "limit": 1}, timeout=6).json()
+            if d:
+                return float(d[0]["lat"]), float(d[0]["lon"])
+        except Exception:
+            pass
         return None, None
 
+
 class MLRanker:
-    def __init__(self): self.model = joblib.load(MODEL_PATH) if Path(MODEL_PATH).exists() else None
+    def __init__(self):
+        self.model = joblib.load(MODEL_PATH) if Path(MODEL_PATH).exists() else None
+
     def score(self, places):
-        if not self.model: return [{**p,"ml_score":None} for p in places]
-        rows = pd.DataFrame([{"Google review rating":float(p.get("rating",0) or 0),
-            "time needed to visit in hrs":float(p.get("duration",0) or 0),
-            "Entrance Fee in INR":float(p.get("fee",0) or 0),
-            "Type":p.get("type","?"),"City":p.get("city","?"),"State":p.get("state","?")} for p in places])
+        if not self.model:
+            return [{**p, "ml_score": None} for p in places]
+        rows = pd.DataFrame([{"Google review rating": float(p.get("rating", 0) or 0),
+            "time needed to visit in hrs": float(p.get("duration", 0) or 0),
+            "Entrance Fee in INR": float(p.get("fee", 0) or 0),
+            "Type": p.get("type", "?"), "City": p.get("city", "?"), "State": p.get("state", "?")} for p in places])
         try:
             preds = self.model.predict(rows)
-            return [{**p,"ml_score":round(float(s),4)} for p,s in zip(places,preds)]
-        except: return [{**p,"ml_score":None} for p in places]
+            return [{**p, "ml_score": round(float(s), 4)} for p, s in zip(places, preds)]
+        except Exception:
+            return [{**p, "ml_score": None} for p in places]
+
 
 class OSRMRouter:
     def route(self, a, b):
         try:
-            d=requests.get(f"https://router.project-osrm.org/route/v1/driving/{a[1]},{a[0]};{b[1]},{b[0]}",
-                           params={"overview":"full","geometries":"geojson"},timeout=8).json()
-            if d.get("code")=="Ok":
-                rt=d["routes"][0]; return {"km":round(rt["distance"]/1000,1),"min":round(rt["duration"]/60,0),"coords":rt["geometry"]["coordinates"]}
-        except: pass
+            d = requests.get(f"https://router.project-osrm.org/route/v1/driving/{a[1]},{a[0]};{b[1]},{b[0]}",
+                             params={"overview": "full", "geometries": "geojson"}, timeout=8).json()
+            if d.get("code") == "Ok":
+                rt = d["routes"][0]
+                return {"km": round(rt["distance"] / 1000, 1), "min": round(rt["duration"] / 60, 0),
+                        "coords": rt["geometry"]["coordinates"]}
+        except Exception:
+            pass
         return None
 
+
 def recommend(places, city, budget, interest, days):
-    r = [p for p in places if p.get("city","").lower()==city.lower()]
-    if interest and interest!="Any": r=[p for p in r if interest.lower() in p.get("type","").lower()]
-    if budget and budget<100000:     r=[p for p in r if float(p.get("fee",0) or 0)<=budget]
-    r=[p for p in r if isinstance(p.get("duration"),(int,float))]
-    return r[:days*3]
+    r = [p for p in places if p.get("city", "").lower() == city.lower()]
+    if interest and interest != "Any":
+        r = [p for p in r if interest.lower() in p.get("type", "").lower()]
+    if budget and budget < 100000:
+        r = [p for p in r if float(p.get("fee", 0) or 0) <= budget]
+    r = [p for p in r if isinstance(p.get("duration"), (int, float))]
+    return r[:days * 3]
+
 
 def build_map(places, segs):
-    valid=[p for p in places if p.get("lat") and p.get("lon")]
-    if not valid: return None
-    m=folium.Map([valid[0]["lat"],valid[0]["lon"]],zoom_start=12,tiles="cartodbpositron")
-    colors=["#5b6ef5","#8b5cf6","#ec4899","#10b981","#f59e0b","#ef4444","#14b8a6"]
-    for i,p in enumerate(valid,1):
-        c=colors[(i-1)%len(colors)]
-        folium.CircleMarker([p["lat"],p["lon"]],radius=13,color="#1a1a2e",weight=2,fill=True,fill_color=c,fill_opacity=.9,
-            popup=folium.Popup(f"<b>{i}. {p['name']}</b><br>⭐{p.get('rating','?')} · ₹{int(float(p.get('fee',0) or 0))} · {p.get('duration','?')}h",max_width=200),
+    valid = [p for p in places if p.get("lat") and p.get("lon")]
+    if not valid:
+        return None
+    m = folium.Map([valid[0]["lat"], valid[0]["lon"]], zoom_start=12, tiles="cartodbpositron")
+    colors = ["#5b6ef5", "#8b5cf6", "#ec4899", "#10b981", "#f59e0b", "#ef4444", "#14b8a6"]
+    for i, p in enumerate(valid, 1):
+        c = colors[(i - 1) % len(colors)]
+        folium.CircleMarker([p["lat"], p["lon"]], radius=13, color="#1a1a2e", weight=2, fill=True,
+            fill_color=c, fill_opacity=.9,
+            popup=folium.Popup(f"<b>{i}. {p['name']}</b><br>⭐{p.get('rating','?')} · ₹{int(float(p.get('fee',0) or 0))} · {p.get('duration','?')}h", max_width=200),
             tooltip=f"{i}. {p['name']}").add_to(m)
-        folium.Marker([p["lat"],p["lon"]],icon=folium.DivIcon(
+        folium.Marker([p["lat"], p["lon"]], icon=folium.DivIcon(
             html=f'<div style="color:#fff;font-weight:800;font-size:9px;text-align:center;margin-top:5px">{i}</div>',
-            icon_size=(26,26),icon_anchor=(13,13))).add_to(m)
+            icon_size=(26, 26), icon_anchor=(13, 13))).add_to(m)
     for s in segs:
-        if s: folium.PolyLine([[lat,lon] for lon,lat in s["coords"]],color="#5b6ef5",weight=4,opacity=.8,dash_array="6 4").add_to(m)
-    m.fit_bounds([[p["lat"],p["lon"]] for p in valid])
+        if s:
+            folium.PolyLine([[lat, lon] for lon, lat in s["coords"]], color="#5b6ef5", weight=4, opacity=.8,
+                            dash_array="6 4").add_to(m)
+    m.fit_bounds([[p["lat"], p["lon"]] for p in valid])
     return m
 
-def generate_video(places, city, output_path="videos/travel_video.mp4"):
-    # Guard: need at least 1 place
+
+# ── VIDEO GENERATION ──────────────────────────────────────────────────────────
+# Gradient "story card" style video, one card per place, rotating palettes.
+_VID_W, _VID_H, _VID_FPS, _VID_DURATION = 1280, 720, 24, 4
+_PALETTES = [
+    ((10, 25, 60), (30, 80, 160)),    # Deep navy
+    ((40, 10, 60), (120, 30, 140)),   # Royal purple
+    ((10, 50, 40), (20, 120, 90)),    # Forest teal
+    ((60, 20, 10), (160, 60, 20)),    # Burnt sienna
+]
+_ACCENT = (212, 168, 67)  # matches app gold
+
+
+@lru_cache(maxsize=len(_PALETTES))
+def _gradient_bg(palette_idx):
+    """Renders each gradient once per palette and caches the result."""
+    top, bot = _PALETTES[palette_idx]
+    t = np.linspace(0, 1, _VID_H).reshape(-1, 1)
+    arr = np.zeros((_VID_H, _VID_W, 3), dtype=np.uint8)
+    for c in range(3):
+        col = (top[c] + (bot[c] - top[c]) * t).astype(np.uint8)
+        arr[:, :, c] = np.repeat(col, _VID_W, axis=1)
+    return arr  # return raw array; callers copy before mutating
+
+
+@lru_cache(maxsize=1)
+def _load_fonts():
+    """Load fonts once from disk and cache forever — eliminates per-card I/O."""
+    candidates = [
+        "arial.ttf",
+        "DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            return (ImageFont.truetype(path, 58), ImageFont.truetype(path, 30),
+                    ImageFont.truetype(path, 20), ImageFont.truetype(path, 16))
+        except Exception:
+            continue
+    d = ImageFont.load_default()
+    return d, d, d, d
+
+
+def _make_card(place, index, total, city):
+    palette_idx = (index - 1) % len(_PALETTES)
+    img = Image.fromarray(_gradient_bg(palette_idx).copy())  # cheap array copy, not a recompute
+    draw = ImageDraw.Draw(img, "RGBA")
+    f_big, f_med, f_sml, f_xs = _load_fonts()
+
+    # Diagonal accent wedge, bottom-left
+    draw.polygon([(0, _VID_H - 160), (0, _VID_H), (200, _VID_H)], fill=(*_ACCENT, 150))
+
+    # Progress bar
+    progress = int((index / total) * (_VID_W - 80))
+    draw.rectangle([40, _VID_H - 22, _VID_W - 40, _VID_H - 10], fill=(255, 255, 255, 40))
+    draw.rectangle([40, _VID_H - 22, 40 + progress, _VID_H - 10], fill=_ACCENT)
+
+    # Day badge pill
+    day = place.get("day", 1)
+    draw.rounded_rectangle([40, 30, 176, 74], radius=20, fill=_ACCENT)
+    draw.text((108, 52), f"DAY {day}", font=f_xs, fill=(13, 27, 42), anchor="mm")
+
+    # Index counter, top-right
+    draw.ellipse([_VID_W - 108, 18, _VID_W - 42, 84], outline=_ACCENT, width=3)
+    draw.text((_VID_W - 75, 51), f"{index}/{total}", font=f_xs, fill="white", anchor="mm")
+
+    # Place name with soft drop-shadow
+    name = str(place.get("name", "Unknown"))
+    draw.text((62, _VID_H // 2 - 62), name, font=f_big, fill=(0, 0, 0, 130))
+    draw.text((60, _VID_H // 2 - 64), name, font=f_big, fill="white")
+
+    # City line
+    draw.text((62, _VID_H // 2 + 34), f"\U0001F4CD  {place.get('city', city)}", font=f_med, fill=(210, 224, 250))
+
+    # Rating / fee / duration chips
+    rating = place.get("rating", "N/A")
+    fee = int(float(place.get("fee", 0) or 0))
+    duration = place.get("duration", "N/A")
+    draw.text((62, _VID_H // 2 + 82), f"\u2b50 {rating}     \u20b9{fee} entry     {duration}h visit",
+              font=f_sml, fill=_ACCENT)
+
+    # Thin separator
+    draw.line([(40, _VID_H // 2 + 128), (_VID_W - 40, _VID_H // 2 + 128)], fill=(255, 255, 255, 60), width=1)
+
+    # Branding footer
+    draw.text((_VID_W // 2, _VID_H - 40), "\u2708  ItinerAI — AI Travel Planner",
+              font=f_xs, fill=(200, 214, 244), anchor="mm")
+
+    return np.array(img.convert("RGB"))
+
+
+def generate_video(places, city, output_path=None):
+    """Renders a gradient story-card video using OpenCV — much faster than MoviePy.
+    Each card is rendered once; the same frame is written N times (no per-frame recompute).
+    Falls back to MoviePy if OpenCV is unavailable.
+    Returns (path, None) on success or (None, error_message) on failure."""
     places = [p for p in places if p.get("name")]
     if not places:
         return None, "No places available to render. Generate an itinerary with matched places first."
+
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    output_path = output_path or os.path.join(VIDEO_DIR, "travel_video.mp4")
+    total = len(places)
+    frames_per_card = _VID_FPS * _VID_DURATION  # e.g. 24fps × 4s = 96 frames
+
     try:
-        import numpy as np
-        from PIL import Image, ImageDraw, ImageFont
-        from moviepy import ImageClip, concatenate_videoclips
-        os.makedirs("videos", exist_ok=True)
-        W, H = 1280, 720
-        # Navy/gold palette matching the app
-        NAV  = (13, 27, 42)       # #0D1B2A
-        GOLD = (212, 168, 67)     # #D4A843
-        GOLD_DIM = (160, 124, 44) # dimmer gold for divider
-        SLATE = (138, 155, 176)   # #8A9BB0
-        WHITE = (251, 247, 240)   # #FBF7F0
-        clips = []
+        import cv2
+        raw_path = output_path.replace(".mp4", "_raw.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(raw_path, fourcc, _VID_FPS, (_VID_W, _VID_H))
+        if not out.isOpened():
+            raise RuntimeError("cv2.VideoWriter failed to open")
+
         for i, p in enumerate(places, 1):
-            img = Image.new("RGB", (W, H), color=NAV)
-            draw = ImageDraw.Draw(img)
-            # Gold left accent bar
-            draw.rectangle([0, 0, 6, H], fill=GOLD)
-            # Bottom gold rule
-            draw.line([(0, H-70),(W, H-70)], fill=GOLD_DIM, width=1)
-            try:
-                fb = ImageFont.truetype("arial.ttf", 62)
-                fm = ImageFont.truetype("arial.ttf", 30)
-                fs = ImageFont.truetype("arial.ttf", 20)
-            except:
-                fb = fm = fs = ImageFont.load_default()
-            # Day badge (gold pill)
-            draw.rounded_rectangle([36, 28, 170, 72], radius=10, fill=GOLD)
-            draw.text((103, 50), f"DAY  {p.get('day',1)}", font=fs, fill=NAV, anchor="mm")
-            # Place number circle (gold outline)
-            draw.ellipse([W-108, 18, W-42, 84], outline=GOLD, width=2)
-            draw.text((W-75, 51), f"#{i}", font=fm, fill=GOLD, anchor="mm")
-            # Place name
-            name = p.get("name","?")
-            draw.text((48, H//2-60), name, font=fb, fill=WHITE)
-            # City
-            draw.text((48, H//2+30), f"  {p.get('city', city)}", font=fm, fill=SLATE)
-            # Rating + fee
-            rating = p.get("rating","N/A")
-            fee = int(float(p.get("fee", 0) or 0))
-            draw.text((48, H//2+76), f"  {rating}     Rs.{fee} entry", font=fm, fill=GOLD)
-            # Branding
-            draw.text((W//2, H-36), "ItinerAI  —  AI Travel Planner", font=fs, fill=GOLD_DIM, anchor="mm")
-            clips.append(ImageClip(np.array(img)).with_duration(3))
-        video = concatenate_videoclips(clips, method="compose")
-        video.write_videofile(output_path, fps=24, codec="libx264", logger=None)
-        return output_path
-    except Exception as e:
-        return None, str(e)
+            frame_rgb = _make_card(p, i, total, city)              # render once per place
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            for _ in range(frames_per_card):                        # duplicate, don't rerender
+                out.write(frame_bgr)
+        out.release()
+
+        # Re-mux with ffmpeg: proper H.264 + faststart for browser streaming
+        ff_cmd = (
+            f'ffmpeg -y -i "{raw_path}" '
+            f'-c:v libx264 -crf 23 -preset fast -movflags +faststart '
+            f'"{output_path}" -loglevel quiet'
+        )
+        # Attempt to add music if available
+        if os.path.exists(MUSIC_PATH):
+            ff_cmd = (
+                f'ffmpeg -y -i "{raw_path}" -stream_loop -1 -i "{MUSIC_PATH}" '
+                f'-c:v libx264 -crf 23 -preset fast -c:a aac -shortest '
+                f'-movflags +faststart "{output_path}" -loglevel quiet'
+            )
+        ret = os.system(ff_cmd)
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
+        # If ffmpeg failed, serve the raw mp4v file directly
+        if ret != 0 or not os.path.exists(output_path):
+            os.rename(raw_path if os.path.exists(raw_path) else output_path, output_path)
+        return output_path, None
+
+    except Exception as cv_err:
+        # ── MoviePy fallback ──────────────────────────────────────────────────
+        try:
+            from moviepy import ImageClip, concatenate_videoclips
+            clips = [ImageClip(_make_card(p, i, total, city)).with_duration(_VID_DURATION)
+                     for i, p in enumerate(places, 1)]
+            video = concatenate_videoclips(clips, method="compose")
+            if os.path.exists(MUSIC_PATH):
+                try:
+                    from moviepy import AudioFileClip
+                    video = video.with_audio(AudioFileClip(MUSIC_PATH).subclipped(0, video.duration))
+                except Exception:
+                    pass
+            video.write_videofile(output_path, fps=_VID_FPS, codec="libx264", audio_codec="aac", logger=None)
+            return output_path, None
+        except Exception as e:
+            return None, f"OpenCV failed ({cv_err}); MoviePy fallback also failed: {e}"
+
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 def init_db():
-    c=sqlite3.connect(DB_PATH); c.execute("CREATE TABLE IF NOT EXISTS h(id INTEGER PRIMARY KEY AUTOINCREMENT,ts TEXT,city TEXT,days INT,budget INT,interest TEXT,itin TEXT)"); c.commit(); c.close()
-def save_h(city,days,budget,interest,itin):
-    c=sqlite3.connect(DB_PATH); c.execute("INSERT INTO h(ts,city,days,budget,interest,itin) VALUES(?,?,?,?,?,?)",(datetime.now().strftime("%d %b %H:%M"),city,days,budget,interest,itin)); c.commit(); c.close()
+    c = sqlite3.connect(DB_PATH)
+    c.execute("CREATE TABLE IF NOT EXISTS h(id INTEGER PRIMARY KEY AUTOINCREMENT,ts TEXT,city TEXT,days INT,budget INT,interest TEXT,itin TEXT)")
+    c.commit()
+    c.close()
+
+
+def save_h(city, days, budget, interest, itin):
+    c = sqlite3.connect(DB_PATH)
+    c.execute("INSERT INTO h(ts,city,days,budget,interest,itin) VALUES(?,?,?,?,?,?)",
+              (datetime.now().strftime("%d %b %H:%M"), city, days, budget, interest, itin))
+    c.commit()
+    c.close()
+
+
 def load_h():
-    try: c=sqlite3.connect(DB_PATH); df=pd.read_sql("SELECT * FROM h ORDER BY id DESC LIMIT 10",c); c.close(); return df
-    except: return pd.DataFrame()
+    try:
+        c = sqlite3.connect(DB_PATH)
+        df = pd.read_sql("SELECT * FROM h ORDER BY id DESC LIMIT 10", c)
+        c.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 
 @st.cache_resource(show_spinner=False)
 def load_pipeline():
-    di=DataIngestion(); df=di.load(); em=EmbeddingModel(); vs=VectorStore()
+    di = DataIngestion()
+    df = di.load()
+    em = EmbeddingModel()
+    vs = VectorStore()
     if vs.empty():
-        docs=di.to_docs(df); vs.add(docs, em.embed_docs(docs))
-    return RAGPipeline(vs,em), MLRanker(), OSRMRouter(), Geocoder()
+        docs = di.to_docs(df)
+        vs.add(docs, em.embed_docs(docs))
+    return RAGPipeline(vs, em), MLRanker(), OSRMRouter(), Geocoder()
+
 
 init_db()
 
@@ -336,19 +521,27 @@ st.markdown("""
   </div>
 </div>""", unsafe_allow_html=True)
 
+if not os.getenv("GROQ_API_KEY"):
+    st.warning(
+        "⚠️ No **GROQ_API_KEY** found. Add it to a `.env` file locally, or to your deployment's "
+        "**Secrets** (e.g. Streamlit Cloud → App settings → Secrets) as `GROQ_API_KEY = \"...\"`. "
+        "The itinerary generator needs it to call Llama 3.3 70B via Groq.",
+        icon="🔑",
+    )
+
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🧭 Plan Your Trip")
     st.caption("Fill in your preferences below")
     st.divider()
-    city     = st.text_input("Destination City", placeholder="Jaipur, Delhi, Mysore, Goa…")
-    days     = st.slider("Trip Duration (days)", 1, 7, 3)
-    budget   = st.selectbox("Budget per Attraction",
-                 [200,500,1000,2000,5000,100000], index=3,
-                 format_func=lambda x: f"Up to ₹{x:,}" if x<100000 else "No limit")
+    city = st.text_input("Destination City", placeholder="Jaipur, Delhi, Mysore, Goa…")
+    days = st.slider("Trip Duration (days)", 1, 7, 3)
+    budget = st.selectbox("Budget per Attraction",
+                          [200, 500, 1000, 2000, 5000, 100000], index=3,
+                          format_func=lambda x: f"₹{x:,}" if x < 100000 else "No limit")
     interest = st.selectbox("Primary Interest",
-                 ["Any","Historical","Religious","Nature","Beach",
-                  "Wildlife","Museum","Recreational","War Memorial","Tomb","Lake"])
+                            ["Any", "Historical", "Religious", "Nature", "Beach",
+                             "Wildlife", "Museum", "Recreational", "War Memorial", "Tomb", "Lake"])
     st.divider()
     generate = st.button("✨ Generate Itinerary", use_container_width=True)
     st.divider()
@@ -368,39 +561,56 @@ if generate:
     city = city.strip()
     if not city:
         st.warning("Please enter a destination city.")
+    elif not os.getenv("GROQ_API_KEY"):
+        st.error("Can't generate an itinerary without a GROQ_API_KEY — see the notice above.")
     else:
         with st.spinner("Loading AI pipeline…"):
-            rag, ranker, router, geo = load_pipeline()
+            try:
+                rag, ranker, router, geo = load_pipeline()
+            except Exception as e:
+                st.error(f"Failed to load pipeline: {e}")
+                st.stop()
         with st.spinner(f"Generating itinerary for **{city}** with Llama 3.3 70B…"):
             try:
                 q = f"{days}-day trip to {city}, interest:{interest}, budget-friendly"
                 res = rag.ask(q, k=15)
             except Exception as e:
-                st.error(f"LLM error: {e}"); st.stop()
-        recs = recommend(res["metadata"], city, budget if budget<100000 else None, interest, days)
+                st.error(f"LLM error: {e}")
+                st.stop()
+        recs = recommend(res["metadata"], city, budget if budget < 100000 else None, interest, days)
         recs = ranker.score(recs)
-        recs.sort(key=lambda x:(x.get("ml_score") is None, -(x.get("ml_score") or 0)))
-        with st.spinner("Geocoding places & calculating routes…"):
+        recs.sort(key=lambda x: (x.get("ml_score") is None, -(x.get("ml_score") or 0)))
+        if recs:
+            prog = st.progress(0.0, text="Geocoding places & calculating routes…")
             for i, p in enumerate(recs):
-                lat, lon = geo.get(p.get("name",""), p.get("city",""))
-                p["lat"], p["lon"], p["day"] = lat, lon, (i//3)+1
+                lat, lon = geo.get(p.get("name", ""), p.get("city", ""))
+                p["lat"], p["lon"], p["day"] = lat, lon, (i // 3) + 1
+                prog.progress((i + 1) / len(recs), text=f"Geocoding {i+1}/{len(recs)} places…")
                 time.sleep(1.1)
-            segs=[]
-            for i in range(len(recs)-1):
-                a,b=recs[i],recs[i+1]
-                segs.append(router.route((a.get("lat"),a.get("lon")),(b.get("lat"),b.get("lon")))
+            prog.empty()
+            segs = []
+            for i in range(len(recs) - 1):
+                a, b = recs[i], recs[i + 1]
+                segs.append(router.route((a.get("lat"), a.get("lon")), (b.get("lat"), b.get("lon")))
                             if a.get("lat") and b.get("lat") else None)
+        else:
+            segs = []
         save_h(city, days, budget, interest, res["answer"])
-        st.session_state.update({"res":res,"recs":recs,"segs":segs,"city":city,"days":days,"video_path":None})
+        st.session_state.update({"res": res, "recs": recs, "segs": segs, "city": city,
+                                  "days": days, "video_path": None})
+        st.toast(f"Itinerary for {city} is ready!", icon="🎉")
+        st.balloons()
         st.rerun()
 
 # ── TAB 1 — ITINERARY ─────────────────────────────────────────────────────────
 with tab1:
     if "res" in st.session_state:
-        recs=st.session_state["recs"]; city_=st.session_state["city"]; days_=st.session_state["days"]
-        total_fee=sum(float(p.get("fee",0)or 0) for p in recs)
-        total_hrs=sum(float(p.get("duration",0)or 0) for p in recs)
-        avg_rat  =(sum(float(p.get("rating",0)or 0) for p in recs)/len(recs)) if recs else 0
+        recs = st.session_state["recs"]
+        city_ = st.session_state["city"]
+        days_ = st.session_state["days"]
+        total_fee = sum(float(p.get("fee", 0) or 0) for p in recs)
+        total_hrs = sum(float(p.get("duration", 0) or 0) for p in recs)
+        avg_rat = (sum(float(p.get("rating", 0) or 0) for p in recs) / len(recs)) if recs else 0
         st.markdown(f"""
         <div class="stat-bar">
           <div class="stat-cell"><div class="sv">🏙️</div><div class="sk">{city_}</div></div>
@@ -419,19 +629,23 @@ with tab1:
 # ── TAB 2 — MAP ───────────────────────────────────────────────────────────────
 with tab2:
     if "recs" in st.session_state:
-        recs=st.session_state["recs"]; segs=st.session_state["segs"]
+        recs = st.session_state["recs"]
+        segs = st.session_state["segs"]
         st.markdown('<div class="sec-head"><h2>Interactive Route Map</h2><div class="sec-line"></div></div>', unsafe_allow_html=True)
-        valid_segs=[s for s in segs if s]
+        valid_segs = [s for s in segs if s]
         if valid_segs:
-            total_km=sum(s["km"] for s in valid_segs); total_min=sum(s["min"] for s in valid_segs)
+            total_km = sum(s["km"] for s in valid_segs)
+            total_min = sum(s["min"] for s in valid_segs)
             st.markdown(f"""<div class="route-strip">
               <div><div class="rv">{total_km:.1f} km</div><div class="rk">Total Distance</div></div>
               <div><div class="rv">{int(total_min)} min</div><div class="rk">Drive Time</div></div>
               <div><div class="rv">{len(recs)}</div><div class="rk">Stops</div></div>
             </div>""", unsafe_allow_html=True)
         m = build_map(recs, segs)
-        if m: st_folium(m, width=None, height=520, returned_objects=[])
-        else: st.info("No coordinates found. Try a different city or check your connection.")
+        if m:
+            st_folium(m, width=None, height=520, returned_objects=[])
+        else:
+            st.info("No coordinates found. Try a different city or check your connection.")
     else:
         st.markdown("""<div class="empty"><div class="ei">🗺️</div><h3>Map not generated yet</h3>
         <p>Generate an itinerary first to see your route here.</p></div>""", unsafe_allow_html=True)
@@ -439,13 +653,15 @@ with tab2:
 # ── TAB 3 — PLACES ────────────────────────────────────────────────────────────
 with tab3:
     if "recs" in st.session_state:
-        recs=st.session_state["recs"]
+        recs = st.session_state["recs"]
         st.markdown('<div class="sec-head"><h2>Matched & Ranked Places</h2><div class="sec-line"></div></div>', unsafe_allow_html=True)
         if not recs:
             st.info("No places matched your filters. Try relaxing the budget or interest.")
-        for i,p in enumerate(recs,1):
-            ml=p.get("ml_score"); s_ml=f'<span class="tag t-ml">🤖 {ml:.3f}</span>' if ml else ""
-            lat=p.get("lat"); s_ll=f'<span class="tag t-fee">📍 {lat:.3f},{p["lon"]:.3f}</span>' if lat else ""
+        for i, p in enumerate(recs, 1):
+            ml = p.get("ml_score")
+            s_ml = f'<span class="tag t-ml">🤖 {ml:.3f}</span>' if ml else ""
+            lat = p.get("lat")
+            s_ll = f'<span class="tag t-fee">📍 {lat:.3f},{p["lon"]:.3f}</span>' if lat else ""
             st.markdown(f"""
             <div class="pcard">
               <div class="pnum">{i}</div>
@@ -468,10 +684,9 @@ with tab3:
 with tab4:
     if "res" in st.session_state:
         city_ = st.session_state["city"]
-        recs  = st.session_state["recs"]
-        # Use all RAG metadata as fallback if city filter returned no places
+        recs = st.session_state["recs"]
+        # Fall back to all RAG metadata if the city filter matched nothing
         vid_places = recs if recs else st.session_state["res"]["metadata"]
-        # Assign day numbers if missing (fallback list won't have them)
         for idx, p in enumerate(vid_places):
             if "day" not in p:
                 p["day"] = (idx // 3) + 1
@@ -483,8 +698,8 @@ with tab4:
         if vid_path and Path(vid_path).exists():
             st.video(vid_path)
             n = len(vid_places)
-            st.caption(f"🎬 {n} place{'s' if n!=1 else ''} · {n*3}s · {city_}")
-            col_dl, col_re = st.columns([1,1])
+            st.caption(f"🎬 {n} place{'s' if n != 1 else ''} · {n * 4}s · {city_}")
+            col_dl, col_re = st.columns([1, 1])
             with col_dl:
                 with open(vid_path, "rb") as f:
                     st.download_button("⬇️ Download MP4", f,
@@ -500,26 +715,26 @@ with tab4:
             if not recs:
                 st.info(f"No places matched your city filter — video will use the {n} closest RAG results instead.")
             st.markdown("#### 🎬 Generate a trip highlight video")
-            st.caption(f"Renders a {n*3}s MP4 ({n} place{'s' if n!=1 else ''}) · plays directly in the browser, no download needed.")
+            st.caption(f"Renders a {n * 4}s MP4 ({n} gradient story-cards, one per place) · plays directly in the browser.")
             col_info, col_btn = st.columns([3, 2])
             with col_info:
                 st.markdown("""
 **Each card shows:**
 - Place name & city
-- Day number badge
-- Google rating & entry fee
+- Day number badge + progress bar
+- Rating, entry fee & visit duration
 - ItinerAI branding
                 """)
             with col_btn:
                 st.write("")
                 if st.button("▶️ Generate & Preview Video", use_container_width=True):
-                    with st.spinner(f"Rendering {n} cards… (~{n*2}s)"):
-                        result = generate_video(vid_places, city_)
-                    if isinstance(result, str) and Path(result).exists():
-                        st.session_state["video_path"] = result
+                    with st.spinner(f"Rendering {n} cards… this can take a little while"):
+                        path, err = generate_video(vid_places, city_)
+                    if path and Path(path).exists():
+                        st.session_state["video_path"] = path
+                        st.toast("Video ready!", icon="🎬")
                         st.rerun()
                     else:
-                        err = result[1] if isinstance(result, tuple) else str(result)
                         st.error(f"Generation failed: {err}")
             st.markdown('</div>', unsafe_allow_html=True)
     else:
