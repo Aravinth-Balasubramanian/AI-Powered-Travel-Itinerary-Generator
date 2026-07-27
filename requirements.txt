@@ -44,4 +44,5 @@ sqlalchemy
 # Utilities
 tqdm
 matplotlib
-import torchvision
+torchvision
+opencv-python-headless
